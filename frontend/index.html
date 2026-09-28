@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#075985">
+  <link rel="manifest" href="/static/manifest.webmanifest">
+  <link rel="stylesheet" href="/static/styles.css">
+  <title>NIST Bus Alert</title>
+</head>
+<body>
+  <main>
+    <header><p class="eyebrow">NIST UNIVERSITY</p><h1>NIST Bus Alert</h1><p id="today">Today's Bus Schedule Alerts</p></header>
+    <section id="schedules" aria-live="polite"></section>
+    <button id="enable" type="button">Enable Notifications</button>
+    <p id="notification-status" role="status">Notifications are not enabled.</p>
+  </main>
+  <script src="/static/config.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

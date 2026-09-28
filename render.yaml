@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: nist-bus-alert
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: nist-bus-alert-db
+          property: connectionString
+      - key: TIMEZONE
+        value: Asia/Kolkata
+      - key: CHECK_INTERVAL_MINUTES
+        value: 5
+databases:
+  - name: nist-bus-alert-db
+    plan: basic-256mb
