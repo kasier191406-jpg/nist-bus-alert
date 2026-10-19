@@ -8,7 +8,7 @@ The four fixed daily checks are `06:15 AM`, `08:15 AM`, `09:50 AM`, and `03:20 P
 
 Android Chrome PWA -> Vercel static frontend (or Render-hosted frontend) -> Render FastAPI service -> PostgreSQL -> NIST ERP.
 
-For local development, FastAPI serves the PWA and uses SQLite, creating its parent directory when needed. Production needs durable storage: subscriptions and notification-deduplication hashes must survive restarts and deployments. The Render manifest provisions PostgreSQL. Render SQLite is allowed only when `DATABASE_URL` points under an attached persistent disk and `PERSISTENT_DISK_PATH` names that mount. One FastAPI process runs the API and the five-minute polling task; run one service instance to avoid duplicate polling and notifications.
+For local development, FastAPI serves the PWA and uses SQLite, creating its parent directory when needed. Render can also start with SQLite configured in `DATABASE_URL`, but its ordinary filesystem is ephemeral: subscriptions and schedule state stored there can be lost on restarts or deployments. One FastAPI process runs the API and the five-minute polling task; run one service instance to avoid duplicate polling and notifications.
 
 NIST sometimes returns a rendered `No Schedule Found for the selected date and time` page with HTTP 500. The client accepts that exact ERP page as an empty result, but other HTTP errors and unrecognized HTML are reported separately and retried at the next interval. The API exposes `waiting`, `available`, `no_schedule`, and `error` per schedule time.
 
@@ -96,7 +96,7 @@ The parser strips incidental whitespace, takes the schedule table’s meaningful
 
 ### Render
 
-[`render.yaml`](render.yaml) declares a FastAPI web service and PostgreSQL database. Add these secret variables in the Render dashboard: `VAPID_PRIVATE_KEY`, `VAPID_PUBLIC_KEY`, `VAPID_CLAIMS_EMAIL`, `FRONTEND_URL`, and `PUSH_TEST_TOKEN`. The configured PostgreSQL database is durable and avoids SQLite's single-writer/single-instance limits. To avoid a separate managed PostgreSQL instance at lower scale, a single-instance service can instead use SQLite on an attached Render persistent disk: mount a disk at `/var/data`, set `PERSISTENT_DISK_PATH=/var/data`, and set `DATABASE_URL=sqlite:////var/data/nist_bus_alert.db`. A Render disk requires a paid web service; the application does not claim that a free ephemeral filesystem is durable. Keep exactly one monitoring service instance.
+[`render.yaml`](render.yaml) declares a FastAPI web service and a PostgreSQL database. If the deployed service is currently configured with SQLite, the app will start with that `DATABASE_URL`; SQLite data on Render's ordinary ephemeral filesystem does not survive restarts or deployments, so subscriptions and schedule state may be lost. The Render manifest's PostgreSQL resource is not required for startup when a configured SQLite URL is used. Keep exactly one monitoring service instance.
 
 ### Vercel
 

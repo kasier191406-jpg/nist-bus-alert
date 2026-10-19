@@ -142,35 +142,17 @@ def test_legacy_sqlite_state_is_migrated_without_losing_schedule(tmp_path):
     storage.close()
 
 
-def test_render_runtime_rejects_temporary_sqlite_storage(monkeypatch):
+def test_render_runtime_accepts_configured_sqlite_without_persistent_disk(monkeypatch):
     monkeypatch.setenv("RENDER", "true")
     monkeypatch.setenv("DATABASE_URL", "sqlite:////tmp/nist_bus_alert.db")
     monkeypatch.delenv("PERSISTENT_DISK_PATH", raising=False)
-    with pytest.raises(ValueError, match="PERSISTENT_DISK_PATH"):
-        Config.from_env()
+    assert Config.from_env().database_url == "sqlite:////tmp/nist_bus_alert.db"
 
 def test_render_runtime_rejects_missing_database_url(monkeypatch):
     monkeypatch.setenv("RENDER", "true")
     monkeypatch.delenv("DATABASE_URL", raising=False)
     with pytest.raises(ValueError, match="DATABASE_URL"):
         Config.from_env()
-
-
-def test_render_sqlite_database_must_be_under_declared_persistent_disk(monkeypatch, tmp_path):
-    monkeypatch.setenv("RENDER", "true")
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{(tmp_path / 'outside.db').as_posix()}")
-    monkeypatch.setenv("PERSISTENT_DISK_PATH", str(tmp_path / "disk"))
-    with pytest.raises(ValueError, match="under PERSISTENT_DISK_PATH"):
-        Config.from_env()
-
-
-def test_render_sqlite_is_allowed_under_declared_persistent_disk(monkeypatch, tmp_path):
-    disk = tmp_path / "disk"
-    database = disk / "nist_bus_alert.db"
-    monkeypatch.setenv("RENDER", "true")
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{database.as_posix()}")
-    monkeypatch.setenv("PERSISTENT_DISK_PATH", str(disk))
-    assert Config.from_env().database_url.endswith("nist_bus_alert.db")
 
 
 def test_schedule_api_reports_no_schedule_and_error_states(tmp_path):

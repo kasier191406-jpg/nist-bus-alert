@@ -5,7 +5,6 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv
-from sqlalchemy.engine.url import make_url
 
 
 MONITORED_TIMES = ("06:15 AM", "08:15 AM", "09:50 AM", "03:20 PM")
@@ -36,20 +35,8 @@ class Config:
         database_url = os.getenv("DATABASE_URL", "").strip()
         if not database_url:
             if render_runtime:
-                raise ValueError("Render requires DATABASE_URL to be configured for durable storage.")
+                raise ValueError("Render requires DATABASE_URL to be configured.")
             database_url = "sqlite:///data/nist_bus_alert.db"
-        if render_runtime and database_url.lower().startswith("sqlite:"):
-            disk_path = os.getenv("PERSISTENT_DISK_PATH", "").strip()
-            sqlite_path = make_url(database_url).database
-            if not disk_path or not sqlite_path or sqlite_path == ":memory:":
-                raise ValueError(
-                    "Render SQLite storage requires an attached persistent disk and PERSISTENT_DISK_PATH; "
-                    "otherwise subscriptions and schedule state are lost on restarts or deployments."
-                )
-            try:
-                Path(sqlite_path).resolve().relative_to(Path(disk_path).resolve())
-            except ValueError as exc:
-                raise ValueError("The SQLite DATABASE_URL must be located under PERSISTENT_DISK_PATH on Render.") from exc
         interval = int(os.getenv("CHECK_INTERVAL_MINUTES", "5"))
         if interval < 1:
             raise ValueError("CHECK_INTERVAL_MINUTES must be at least 1.")
