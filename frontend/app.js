@@ -16,7 +16,7 @@ function base64UrlToUint8Array(value) {
 function setNotificationStatus(state, message) {
   statusText.dataset.state = state;
   statusText.textContent = message;
-  button.disabled = state === "enabling" || state === "enabled" || state === "permission-denied";
+  button.disabled = state === "enabling" || state === "registered" || state === "permission-denied";
 }
 
 async function requestJson(path, options) {
@@ -38,25 +38,12 @@ function supportedForPush() {
 }
 
 async function readyServiceWorker() {
-  const registrations = await navigator.serviceWorker.getRegistrations();
-  for (const registration of registrations) {
-    const scriptUrl = registration.active && registration.active.scriptURL;
-    if (!scriptUrl || !scriptUrl.endsWith("/static/sw.js")) {
-      continue;
-    }
-    const subscription = await registration.pushManager.getSubscription();
-    if (subscription) {
-      await requestJson("/api/push/subscribe", {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ endpoint: subscription.endpoint })
-      });
-      await subscription.unsubscribe();
-    }
-    await registration.unregister();
+  const registration = await navigator.serviceWorker.register("/sw.js", { scope: "/" });
+  await navigator.serviceWorker.ready;
+  if (!registration.active || registration.active.state !== "activated") {
+    throw new Error("The service worker did not become active.");
   }
-  await navigator.serviceWorker.register("/sw.js", { scope: "/" });
-  return navigator.serviceWorker.ready;
+  return registration;
 }
 
 async function saveSubscription(subscription) {
@@ -77,15 +64,32 @@ async function getPushConfiguration() {
 }
 
 async function syncExistingSubscription(subscription) {
-  const status = await requestJson("/api/push/status", {
+  const checkStatus = () => requestJson("/api/push/status", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ endpoint: subscription.endpoint })
   });
+  let status = await checkStatus();
   if (!status.active) {
     await saveSubscription(subscription);
+    status = await checkStatus();
   }
-  setNotificationStatus("enabled", "Enabled on this device.");
+  if (!status.active) {
+    throw new Error("The push subscription could not be confirmed as registered with the server.");
+  }
+  setNotificationStatus("registered", "Permission granted; service worker ready; push subscription registered on this device and backend. Delivery has not been verified.");
+}
+
+async function findSubscription(registration) {
+  const registrations = await navigator.serviceWorker.getRegistrations();
+  const ordered = [registration, ...registrations.filter(item => item !== registration)];
+  for (const candidate of ordered) {
+    const subscription = await candidate.pushManager.getSubscription();
+    if (subscription) {
+      return subscription;
+    }
+  }
+  return null;
 }
 
 async function loadSchedules() {
@@ -130,15 +134,18 @@ async function enableNotifications() {
     setNotificationStatus("error", "Error: This browser does not support Web Push.");
     return;
   }
-  setNotificationStatus("enabling", "Enabling notifications...");
+  setNotificationStatus("enabling", "Checking permission, service worker, and device subscription...");
   try {
     let permission = Notification.permission;
     if (permission === "denied") {
       setNotificationStatus("permission-denied", "Permission denied. Change this site's notification setting in your browser to enable alerts.");
       return;
     }
-    const config = await getPushConfiguration();
+    const registration = await readyServiceWorker();
+    let subscription = await findSubscription(registration);
+    let config = null;
     if (permission === "default") {
+      config = await getPushConfiguration();
       permission = await Notification.requestPermission();
     }
     if (permission !== "granted") {
@@ -146,19 +153,17 @@ async function enableNotifications() {
       return;
     }
 
-    const registration = await readyServiceWorker();
-    let subscription = await registration.pushManager.getSubscription();
     if (subscription) {
       await syncExistingSubscription(subscription);
       return;
     }
 
+    config = config || await getPushConfiguration();
     subscription = await registration.pushManager.subscribe({
       userVisibleOnly: true,
       applicationServerKey: base64UrlToUint8Array(config.vapidPublicKey)
     });
-    await saveSubscription(subscription);
-    setNotificationStatus("enabled", "Enabled on this device.");
+    await syncExistingSubscription(subscription);
   } catch (error) {
     setNotificationStatus("error", `Error: ${error.message}`);
   }
@@ -174,15 +179,15 @@ async function refreshNotificationStatus() {
     return;
   }
   if (Notification.permission !== "granted") {
-    setNotificationStatus("not-enabled", "Not enabled.");
+    setNotificationStatus("not-enabled", "Not enabled: browser notification permission has not been granted.");
     return;
   }
   try {
-    await getPushConfiguration();
+    setNotificationStatus("checking", "Permission allowed; checking service worker and device subscription...");
     const registration = await readyServiceWorker();
-    const subscription = await registration.pushManager.getSubscription();
+    const subscription = await findSubscription(registration);
     if (!subscription) {
-      setNotificationStatus("not-enabled", "Not enabled.");
+      setNotificationStatus("not-enabled", "Permission allowed, but no push subscription exists on this device.");
       return;
     }
     await syncExistingSubscription(subscription);
