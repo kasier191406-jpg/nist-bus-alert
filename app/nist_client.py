@@ -28,7 +28,7 @@ class NistClient:
         html = response.text
         relevant_headers = {
             name: response.headers[name]
-            for name in ("Content-Type", "Server", "Location", "Set-Cookie", "X-Request-ID")
+            for name in ("Content-Type", "Server", "Location", "X-Request-ID")
             if name in response.headers
         }
         LOGGER.info(

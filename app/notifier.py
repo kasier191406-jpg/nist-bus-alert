@@ -66,3 +66,37 @@ class WebPushNotifier:
         if failed and not sent:
             raise RuntimeError("No active Web Push subscription accepted the notification.")
         return sent
+
+    def send_test(self, endpoint: str) -> dict[str, bool]:
+        if not self.configured:
+            raise RuntimeError("Web Push is not configured on this server.")
+        subscription = self.storage.active_subscription(endpoint)
+        if subscription is None:
+            raise LookupError("No active subscription exists for the requested device.")
+        payload = json.dumps({
+            "title": "TEST: NIST Bus Alert",
+            "body": "This is a test notification. It does not represent a real bus schedule.",
+            "url": self.frontend_url,
+            "tag": "nist-bus-alert-test",
+        })
+        subscription_info: dict[str, Any] = {
+            "endpoint": subscription["endpoint"],
+            "keys": {"p256dh": subscription["p256dh"], "auth": subscription["auth"]},
+        }
+        try:
+            webpush(
+                subscription_info=subscription_info,
+                data=payload,
+                vapid_private_key=self.private_key,
+                vapid_claims={"sub": f"mailto:{self.claims_email}"},
+            )
+        except WebPushException as exc:
+            provider_status = getattr(getattr(exc, "response", None), "status_code", None)
+            if provider_status in {404, 410}:
+                self.storage.deactivate_subscription(endpoint)
+            if provider_status:
+                raise RuntimeError(f"The push service rejected the test notification (HTTP {provider_status}).") from exc
+            raise RuntimeError("The push service rejected the test notification.") from exc
+        except Exception as exc:
+            raise RuntimeError("The test notification could not be sent to the push service.") from exc
+        return {"provider_accepted": True, "device_display_confirmed": False}

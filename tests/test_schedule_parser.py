@@ -1,4 +1,4 @@
-from app.schedule_parser import parse_schedule
+from app.schedule_parser import parse_schedule, parse_schedule_result
 
 
 PUBLISHED_HTML = """
@@ -31,3 +31,11 @@ def test_minor_whitespace_changes_do_not_change_hash():
 def test_malformed_or_unexpected_html_fails_safely():
     assert parse_schedule("<html><body><div>System online at 10:30</div>") is None
     assert parse_schedule("<table><tr><td>Broken</td><td>layout") is None
+
+
+def test_parser_distinguishes_confirmed_empty_from_unrecognized_html():
+    empty = parse_schedule_result("<html><body>No Schedule Found for the selected date and time</body></html>")
+    malformed = parse_schedule_result("<html><body>Server maintenance is underway</body></html>")
+    assert empty.status == "no_schedule"
+    assert malformed.status == "error"
+    assert malformed.error

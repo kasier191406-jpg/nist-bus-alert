@@ -4,8 +4,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import Boolean, Column, MetaData, String, Table, Text, create_engine, select, update
+from sqlalchemy import Boolean, Column, MetaData, String, Table, Text, create_engine, inspect, select, update
 from sqlalchemy.engine import Engine
+from sqlalchemy.engine.url import make_url
 
 
 metadata = MetaData()
@@ -18,6 +19,8 @@ schedule_state = Table(
     Column("first_detected_at", String(40)),
     Column("last_checked_at", String(40), nullable=False),
     Column("notification_status", String(32), nullable=False, default="not_sent"),
+    Column("result_status", String(20), nullable=False, default="waiting"),
+    Column("last_error", Text),
 )
 push_subscriptions = Table(
     "push_subscriptions", metadata,
@@ -43,9 +46,28 @@ class Storage:
             database_url = f"sqlite:///{database.as_posix()}"
         else:
             database_url = database
-        connect_args = {"check_same_thread": False} if database_url.startswith("sqlite") else {}
+        parsed_url = make_url(database_url)
+        is_sqlite = parsed_url.get_backend_name() == "sqlite"
+        if is_sqlite and parsed_url.database and parsed_url.database != ":memory:":
+            Path(parsed_url.database).parent.mkdir(parents=True, exist_ok=True)
+        connect_args = {"check_same_thread": False} if is_sqlite else {}
         self.engine: Engine = create_engine(database_url, connect_args=connect_args, future=True)
         metadata.create_all(self.engine)
+        self._migrate_schedule_state()
+
+    def _migrate_schedule_state(self) -> None:
+        columns = {column["name"] for column in inspect(self.engine).get_columns("schedule_state")}
+        with self.engine.begin() as connection:
+            if "result_status" not in columns:
+                connection.exec_driver_sql(
+                    "ALTER TABLE schedule_state ADD COLUMN result_status VARCHAR(20) NOT NULL DEFAULT 'waiting'"
+                )
+            if "last_error" not in columns:
+                connection.exec_driver_sql("ALTER TABLE schedule_state ADD COLUMN last_error TEXT")
+            connection.exec_driver_sql(
+                "UPDATE schedule_state SET result_status = 'available' "
+                "WHERE schedule_hash IS NOT NULL AND result_status = 'waiting'"
+            )
 
     def get(self, schedule_date: str, schedule_time: str) -> dict[str, Any] | None:
         with self.engine.connect() as connection:
@@ -63,6 +85,9 @@ class Storage:
         return [dict(row) for row in rows]
 
     def mark_checked(self, schedule_date: str, schedule_time: str) -> None:
+        self.mark_result(schedule_date, schedule_time, "waiting")
+
+    def mark_result(self, schedule_date: str, schedule_time: str, result_status: str, error: str | None = None) -> None:
         now = _now()
         with self.engine.begin() as connection:
             existing = connection.execute(select(schedule_state.c.schedule_date).where(
@@ -73,11 +98,12 @@ class Storage:
                 connection.execute(update(schedule_state).where(
                     schedule_state.c.schedule_date == schedule_date,
                     schedule_state.c.schedule_time == schedule_time,
-                ).values(last_checked_at=now))
+                ).values(last_checked_at=now, result_status=result_status, last_error=error))
             else:
                 connection.execute(schedule_state.insert().values(
                     schedule_date=schedule_date, schedule_time=schedule_time,
                     last_checked_at=now, notification_status="not_sent",
+                    result_status=result_status, last_error=error,
                 ))
 
     def save_schedule(self, schedule_date: str, schedule_time: str, content_hash: str, normalized: str, notification_status: str) -> None:
@@ -91,6 +117,7 @@ class Storage:
                 schedule_hash=content_hash, normalized_schedule=normalized,
                 first_detected_at=(previous["first_detected_at"] if previous and previous["first_detected_at"] else now),
                 last_checked_at=now, notification_status=notification_status,
+                result_status="available", last_error=None,
             )
             if previous:
                 connection.execute(update(schedule_state).where(
@@ -120,6 +147,14 @@ class Storage:
         with self.engine.connect() as connection:
             rows = connection.execute(select(push_subscriptions).where(push_subscriptions.c.active.is_(True))).mappings().all()
         return [dict(row) for row in rows]
+
+    def active_subscription(self, endpoint: str) -> dict[str, Any] | None:
+        with self.engine.connect() as connection:
+            row = connection.execute(select(push_subscriptions).where(
+                push_subscriptions.c.endpoint == endpoint,
+                push_subscriptions.c.active.is_(True),
+            )).mappings().first()
+        return dict(row) if row else None
 
     def deactivate_subscription(self, endpoint: str) -> None:
         with self.engine.begin() as connection:

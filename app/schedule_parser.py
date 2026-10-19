@@ -3,12 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import re
-from typing import Iterable
+from typing import Iterable, Literal
 
 from bs4 import BeautifulSoup
 
 
 EMPTY_MARKERS = ("no record", "no schedule", "not available", "not published", "no data found", "schedule is not")
+CONFIRMED_EMPTY_MARKER = "No Schedule Found for the selected date and time"
 SCHEDULE_WORDS = ("bus", "route", "vehicle", "departure", "arrival", "pickup", "drop", "driver", "conductor")
 
 
@@ -20,6 +21,13 @@ class Schedule:
     @property
     def content_hash(self) -> str:
         return hashlib.sha256(self.normalized.encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True)
+class ScheduleParseResult:
+    status: Literal["available", "no_schedule", "error"]
+    schedule: Schedule | None = None
+    error: str | None = None
 
 
 def _clean(value: str) -> str:
@@ -62,16 +70,18 @@ def _canonical_rows(rows: Iterable[list[str]]) -> tuple[str, tuple[str, ...]]:
     return normalized, display
 
 
-def parse_schedule(html: str) -> Schedule | None:
-    """Return a schedule only when a plausible populated schedule table exists.
-
-    The ERP may return a successful HTML page before publishing a schedule, so this
-    deliberately requires schedule-like table headers and at least one data row.
-    """
-    if not html or _is_empty_text(BeautifulSoup(html, "html.parser").get_text(" ", strip=True)):
-        return None
+def parse_schedule_result(html: str) -> ScheduleParseResult:
+    """Distinguish a populated schedule, a confirmed empty response, and bad HTML."""
+    if not html:
+        return ScheduleParseResult("error", error="The ERP returned an empty response.")
 
     soup = BeautifulSoup(html, "html.parser")
+    page_text = _clean(soup.get_text(" ", strip=True))
+    if CONFIRMED_EMPTY_MARKER.casefold() in page_text.casefold():
+        return ScheduleParseResult("no_schedule")
+    if not page_text:
+        return ScheduleParseResult("error", error="The ERP returned an empty or malformed HTML page.")
+
     candidates = []
     for table in soup.find_all("table"):
         table_rows = _rows(table)
@@ -80,14 +90,21 @@ def parse_schedule(html: str) -> Schedule | None:
         score = _score_table(table_rows)
         header = " ".join(table_rows[0]).lower()
         data_rows = table_rows[1:]
-        # Requiring a domain header avoids treating an unrelated status/layout table as a schedule.
         if score >= 12 and any(word in header for word in SCHEDULE_WORDS):
             candidates.append((score, table_rows[0], data_rows))
 
     if not candidates:
-        return None
+        return ScheduleParseResult(
+            "error",
+            error="The ERP response did not contain a recognized schedule or confirmed no-schedule result.",
+        )
     _, header, data_rows = max(candidates, key=lambda candidate: candidate[0])
     normalized, display = _canonical_rows([header, *data_rows])
     if not display or len(display) < 2:
-        return None
-    return Schedule(normalized=normalized, display_lines=display)
+        return ScheduleParseResult("error", error="The ERP schedule table was incomplete or malformed.")
+    return ScheduleParseResult("available", schedule=Schedule(normalized=normalized, display_lines=display))
+
+
+def parse_schedule(html: str) -> Schedule | None:
+    """Compatibility helper returning a schedule only for a recognized table."""
+    return parse_schedule_result(html).schedule

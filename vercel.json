@@ -1,1 +1,14 @@
-{"cleanUrls":true,"rewrites":[{"source":"/(.*)","destination":"/frontend/$1"}]}
+{
+  "cleanUrls": true,
+  "rewrites": [
+    { "source": "/static/:path*", "destination": "/frontend/:path*" },
+    { "source": "/sw.js", "destination": "/frontend/sw.js" },
+    { "source": "/", "destination": "/frontend/index.html" }
+  ],
+  "headers": [
+    {
+      "source": "/sw.js",
+      "headers": [{ "key": "Service-Worker-Allowed", "value": "/" }]
+    }
+  ]
+}

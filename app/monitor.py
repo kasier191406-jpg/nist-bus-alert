@@ -5,7 +5,7 @@ import logging
 from zoneinfo import ZoneInfo
 
 from .nist_client import NistClient
-from .schedule_parser import parse_schedule
+from .schedule_parser import parse_schedule_result
 from .storage import Storage
 
 
@@ -26,17 +26,25 @@ class Monitor:
             html = self.client.fetch(today, self.schedule_time)
         except Exception as exc:
             LOGGER.warning("NIST ERP request failed for %s %s: %s", date_text, self.schedule_time, exc)
+            self.storage.mark_result(date_text, self.schedule_time, "error", f"ERP request failed: {exc}")
             return "request_failed"
 
-        self.storage.mark_checked(date_text, self.schedule_time)
-        schedule = parse_schedule(html)
-        if schedule is None:
+        parsed = parse_schedule_result(html)
+        if parsed.status == "no_schedule":
+            self.storage.mark_result(date_text, self.schedule_time, "no_schedule")
             LOGGER.info("No published schedule found for %s %s", date_text, self.schedule_time)
             return "unavailable"
+        if parsed.status == "error" or parsed.schedule is None:
+            error = parsed.error or "The ERP schedule response could not be parsed."
+            self.storage.mark_result(date_text, self.schedule_time, "error", error)
+            LOGGER.warning("NIST ERP parser failed for %s %s: %s", date_text, self.schedule_time, error)
+            return "parse_failed"
+        schedule = parsed.schedule
 
         previous = self.storage.get(date_text, self.schedule_time)
         same_schedule = bool(previous and previous["schedule_hash"] == schedule.content_hash)
         if same_schedule and (self.notifier is None or previous["notification_status"] == "sent"):
+            self.storage.mark_result(date_text, self.schedule_time, "available")
             LOGGER.info("Schedule is unchanged for %s %s", date_text, self.schedule_time)
             return "unchanged"
 
@@ -52,9 +60,12 @@ class Monitor:
             LOGGER.info("Schedule %s detected (Web Push not configured).", "update" if updated else "availability")
             return "detected_without_notification"
         try:
-            self.notifier.send(date_text, self.schedule_time, schedule, updated)
+            accepted = self.notifier.send(date_text, self.schedule_time, schedule, updated)
+            if accepted == 0:
+                raise RuntimeError("The push service did not accept the notification for any subscription.")
         except Exception as exc:
             LOGGER.warning("Web Push notification failed; it will be retried: %s", exc)
+            self.storage.mark_result(date_text, self.schedule_time, "error", f"Notification delivery failed: {exc}")
             return "notification_failed"
 
         self.storage.save_notified_schedule(date_text, self.schedule_time, schedule.content_hash, schedule.normalized)

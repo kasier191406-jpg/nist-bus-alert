@@ -9,6 +9,8 @@ h1 { margin: 4px 0; font-size: 2rem; }
 #schedules { display: grid; gap: 10px; margin-bottom: 24px; }
 .schedule { background: white; border: 1px solid #bae6fd; border-left: 5px solid #94a3b8; padding: 14px; border-radius: 6px; }
 .schedule.available { border-left-color: #16a34a; }
+.schedule.no_schedule { border-left-color: #0284c7; }
+.schedule.error, .schedule-error { border-left-color: #dc2626; color: #991b1b; }
 .schedule h2 { font-size: 1rem; margin: 0; }
 .schedule p { margin: 5px 0 0; color: #52606d; font-size: .9rem; }
 .routes { font-size: .8rem; line-height: 1.45; margin-top: 9px; color: #334e68; white-space: pre-line; }

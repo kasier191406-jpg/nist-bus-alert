@@ -6,11 +6,11 @@ The four fixed daily checks are `06:15 AM`, `08:15 AM`, `09:50 AM`, and `03:20 P
 
 ## Architecture
 
-Android Chrome PWA -> Vercel static frontend -> Render FastAPI service -> PostgreSQL -> NIST ERP.
+Android Chrome PWA -> Vercel static frontend (or Render-hosted frontend) -> Render FastAPI service -> PostgreSQL -> NIST ERP.
 
-For local development, FastAPI serves the PWA and uses SQLite. The same repository code accepts a PostgreSQL `DATABASE_URL` in production. One FastAPI process runs the API and the five-minute polling task. The polling task is intentionally simple for this small MVP; production should run one service instance to avoid two instances sending duplicate notifications.
+For local development, FastAPI serves the PWA and uses SQLite, creating its parent directory when needed. Production needs durable storage: subscriptions and notification-deduplication hashes must survive restarts and deployments. The Render manifest provisions PostgreSQL. Render SQLite is allowed only when `DATABASE_URL` points under an attached persistent disk and `PERSISTENT_DISK_PATH` names that mount. One FastAPI process runs the API and the five-minute polling task; run one service instance to avoid duplicate polling and notifications.
 
-NIST sometimes returns a rendered `No Schedule Found for the selected date and time` page with HTTP 500. The client recognizes that exact ERP page as a valid empty result. Other errors are logged and retried at the next interval.
+NIST sometimes returns a rendered `No Schedule Found for the selected date and time` page with HTTP 500. The client accepts that exact ERP page as an empty result, but other HTTP errors and unrecognized HTML are reported separately and retried at the next interval. The API exposes `waiting`, `available`, `no_schedule`, and `error` per schedule time.
 
 ## Local setup
 
@@ -29,6 +29,7 @@ DATABASE_URL=sqlite:///data/nist_bus_alert.db
 VAPID_PRIVATE_KEY=
 VAPID_PUBLIC_KEY=
 VAPID_CLAIMS_EMAIL=you@example.com
+PUSH_TEST_TOKEN=
 FRONTEND_URL=http://localhost:8000
 TIMEZONE=Asia/Kolkata
 CHECK_INTERVAL_MINUTES=5
@@ -84,7 +85,8 @@ Each browser/device has its own subscription. Invalid `404`/`410` subscriptions 
 
 The parser strips incidental whitespace, takes the schedule table’s meaningful cells, creates a normalized representation, and hashes it with SHA-256. State is keyed by `date + schedule time`.
 
-- No table: no notification.
+- Confirmed no-schedule page: no notification.
+- Unexpected HTTP responses or unrecognized HTML: record an error and retry without replacing the last known schedule.
 - First published hash: save and notify active subscriptions.
 - Same hash: no repeat notification.
 - Changed hash: save and send an update.
@@ -94,22 +96,36 @@ The parser strips incidental whitespace, takes the schedule table’s meaningful
 
 ### Render
 
-[`render.yaml`](render.yaml) declares a FastAPI web service and PostgreSQL database. Add these secret variables in the Render dashboard: `VAPID_PRIVATE_KEY`, `VAPID_PUBLIC_KEY`, `VAPID_CLAIMS_EMAIL`, and `FRONTEND_URL`. Set `DATABASE_URL` from the Render database connection string, preferably as `postgresql+psycopg://...` for SQLAlchemy/psycopg 3. Keep exactly one monitoring service instance.
+[`render.yaml`](render.yaml) declares a FastAPI web service and PostgreSQL database. Add these secret variables in the Render dashboard: `VAPID_PRIVATE_KEY`, `VAPID_PUBLIC_KEY`, `VAPID_CLAIMS_EMAIL`, `FRONTEND_URL`, and `PUSH_TEST_TOKEN`. The configured PostgreSQL database is durable and avoids SQLite's single-writer/single-instance limits. To avoid a separate managed PostgreSQL instance at lower scale, a single-instance service can instead use SQLite on an attached Render persistent disk: mount a disk at `/var/data`, set `PERSISTENT_DISK_PATH=/var/data`, and set `DATABASE_URL=sqlite:////var/data/nist_bus_alert.db`. A Render disk requires a paid web service; the application does not claim that a free ephemeral filesystem is durable. Keep exactly one monitoring service instance.
 
 ### Vercel
 
-Deploy the `frontend/` directory as a static Vercel project. Before deploying, set `window.NIST_BUS_API_BASE` in [`frontend/config.js`](frontend/config.js) to your HTTPS Render API origin, for example `https://nist-bus-alert.onrender.com`. Set Render’s `FRONTEND_URL` to the matching Vercel origin; FastAPI then allows that origin via CORS. The API allows only that origin and common localhost development origins, not wildcard CORS.
+Deploy the repository root as a static Vercel project so [`vercel.json`](vercel.json) can map `/static/*` and `/sw.js` to the actual files under `frontend/`. [`frontend/config.js`](frontend/config.js) points non-local deployments at the provided Render service URL; update it if the API origin changes. Set Render’s `FRONTEND_URL` to the exact Vercel origin so FastAPI allows that origin via CORS. The API allows only that origin and common localhost development origins, not wildcard CORS.
 
-The bundled `frontend/manifest.webmanifest`, `sw.js`, and icon make the app installable where the browser supports PWAs.
+The root-scoped service worker is served at `/sw.js` with `Service-Worker-Allowed: /`. The bundled manifest and icon make the app installable where the browser supports PWAs.
 
 ## API
 
 - `GET /health` - health check
 - `GET /api/schedules/today` - four fixed times and current known states
-- `GET /api/config` - public VAPID key only
+- `GET /api/config` - public VAPID key and a non-secret readiness flag
 - `POST /api/push/subscribe` - register/update a browser subscription
+- `POST /api/push/status` - check whether a device subscription is active
 - `DELETE /api/push/subscribe` - deactivate a subscription
+- `POST /api/push/test` - send a labelled test to one active subscription; requires `PUSH_TEST_TOKEN` in `X-Push-Test-Token`
+
+### Test notification
+
+Set a strong, private `PUSH_TEST_TOKEN` in Render. Do not put it in frontend JavaScript. On the subscribed Android device, retrieve that device’s endpoint from its browser’s Web Push subscription and send only that endpoint to the protected test route. A successful response means the push provider accepted the message; it cannot confirm that Android displayed it.
+
+The test payload is labelled `TEST`, targets exactly one active endpoint, and does not read or update schedule state. Never use the test endpoint without the secret header.
+
+```powershell
+$headers = @{ "X-Push-Test-Token" = $env:PUSH_TEST_TOKEN }
+$body = @{ endpoint = $env:PUSH_SUBSCRIPTION_ENDPOINT } | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri "https://nist-bus-alert-2.onrender.com/api/push/test" -Headers $headers -ContentType "application/json" -Body $body
+```
 
 ## Limitations
 
-The app cannot create VAPID keys or deploy Render/Vercel without your accounts. Web Push needs HTTPS and valid VAPID values. Render’s periodic polling should use a single running instance; horizontal scaling requires a database-level lock, which is deliberately outside this four-user MVP.
+The app cannot create VAPID keys or deploy Render/Vercel without your accounts. Render requires `DATABASE_URL`, `VAPID_PRIVATE_KEY`, `VAPID_PUBLIC_KEY`, `VAPID_CLAIMS_EMAIL`, `FRONTEND_URL`, and (to enable protected test sends) `PUSH_TEST_TOKEN`. Web Push needs HTTPS and a matching VAPID key pair. Render’s periodic polling should use a single running instance; horizontal scaling requires a database-level lock, which is deliberately outside this four-user MVP. Free web-service spin-down can delay polling and notification delivery until the service wakes; local tests do not verify deployed push delivery.
